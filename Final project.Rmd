@@ -1,0 +1,408 @@
+---
+title: "An Empirical Study of Time Series Forecasting Methods on Retail Store Sales Data"
+author: "Ajith Kumar Ethirajulu, Deepak Raj Mohan Raj, Madhu Sikha Babu, Zeming Zhang"
+date: '2023-04-26'
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+## Introduction:
+
+The retail industry heavily relies on accurate sales forecasting to optimize inventory management, plan promotions, and make informed business decisions. In this project, we conducted an empirical study to forecast retail store sales using various time series forecasting methods. Our dataset comprises a vast collection of 3,000,888 records, capturing sales details from 54 distinct stores and 83,488 transactions.
+
+The primary objective of this study was to analyze the components of sales, such as trend and seasonality, and evaluate the performance of different forecasting models implemented in R programming. We employed seasonal naive, exponential smoothing (ETS), ARIMA, and Prophet models, assessing their ability to capture underlying patterns in the sales data and provide accurate predictions. Key evaluation metrics, including the root mean square error (RMSE), were used to compare the forecasting accuracy of these models.
+
+```{r setup, results="hide", warning=F, message=F}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+
+# installing the necessary libraries
+library(vctrs)
+library(zoo)
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(lubridate)
+library(ggplot2)
+library(tsibble)
+library(fable)
+library(fabletools)
+library(feasts)
+library(tsibbledata)
+library(cowplot)
+library(rlang)
+library(prophet)
+library(plotly)
+library(RColorBrewer)
+```
+
+```{r}
+# Read the data as dataframe
+train <- read.csv("train.csv")
+test <- read.csv("test.csv")
+stores <- read.csv("stores.csv")
+head(train)
+
+transactions <- read.csv("transactions.csv") %>% arrange(store_nbr, date)
+
+# Datetime Conversion
+train$date <- as.Date(train$date, format = "%Y-%m-%d")
+test$date <- as.Date(test$date, format = "%Y-%m-%d")
+transactions$date <- as.Date(transactions$date, format = "%Y-%m-%d")
+
+# Data types conversion
+train$onpromotion <- as.numeric(train$onpromotion)
+train$sales <- as.numeric(train$sales)
+stores$cluster <- as.integer(stores$cluster)
+
+head(train)
+
+```
+
+```{r}
+head(transactions)
+```
+
+
+
+```{r}
+# Generate a color palette with 54 colors
+my_colors <- colorRampPalette(brewer.pal(12, "Set3"))(54)
+
+# Merge data frames
+temp <- train %>% 
+  group_by(date, store_nbr) %>% 
+  summarize(sales = sum(sales), .groups = "drop") %>% 
+  left_join(transactions, by = c("date", "store_nbr"))
+
+# Calculate Spearman correlation and print the result
+corr <- cor(temp$sales, temp$transactions, method = "spearman", use = "complete.obs")
+cat("Spearman Correlation between Total Sales and Transactions: ", formatC(corr, format = "f", digits = 4), "\n")
+
+# Plot transactions by store
+plot_data <- transactions %>% 
+  arrange(store_nbr, date) %>%
+  mutate(store_nbr = as.factor(store_nbr)) %>%   # Convert to factor
+  ggplot(aes(x = date, y = transactions, color = store_nbr)) +
+  geom_line() +
+  ggtitle("Transactions") +
+  xlab("Date") +
+  ylab("Transactions") +
+  scale_color_manual(values = my_colors)
+
+# Increase the width of the figure
+options(repr.plot.width=10)
+
+# Convert ggplot to plotly object
+plot_data <- ggplotly(plot_data, tooltip = c("store_nbr", "transactions", "date"), dynamicTicks = TRUE)
+
+# Show the plot
+plot_data
+```
+
+This is an interactive plot using ggplotly, which helps us to check the transactions done on a particular date and store number by hovering over it.
+
+```{r}
+# Create a copy of transactions as 'a'
+a <- transactions
+
+# Extract year and month from the date column
+a$year <- format(a$date, "%Y")
+a$month <- format(a$date, "%b")
+
+# Plot a box plot
+plot_data <- plot_ly(a, x = ~year, y = ~transactions, color = ~month, type = "box") %>%
+  layout(title = "Transactions", xaxis = list(title = "Year"), yaxis = list(title = "Transactions"))
+
+# Show the plot
+plot_data
+
+```
+
+This is an interactive box plot which shows the outliers for transactions.
+
+```{r}
+# Create a copy of transactions and resample to monthly frequency
+a <- transactions %>%
+  mutate(date = as.Date(date)) %>%
+  group_by(year = year(date), month = month(date)) %>%
+  summarize(transactions = mean(transactions), .groups = "drop") %>%
+  mutate(date = ymd(paste(year, month, "01", sep = "-")))
+head(a)
+# Define a color palette with a different color for each year
+color_palette <- c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf")
+
+# Set the x-axis range to the minimum and maximum dates in the 'a' data frame
+x_range <- range(a$date)
+
+# Plot the data using plot_ly function
+plot_data <- plot_ly(a, x = ~date, y = ~transactions, color = ~year, type = "scatter", mode = "lines",
+                     marker = list(colors = color_palette))
+
+# Add chart title and axis labels
+plot_data <- plot_data %>% layout(title = "Monthly Average Transactions",
+                                  xaxis = list(title = "Date", range = x_range),
+                                  yaxis = list(title = "Transactions"))
+
+# Show the plot
+plot_data
+
+
+```
+
+This interactive plot shows the mean transactions each month, helps us to identify seasonal pattern.
+
+```{r}
+# SELECTING A PARTICULAR STORE AND CATEGORY (FAMILY)
+
+subset_train <- function(store, family_name) {
+  train %>% 
+    filter(store_nbr == store & family == family_name) %>% 
+    select(-id, -store_nbr, -family, -onpromotion) %>% 
+    slice(1:nrow(.)) %>% 
+    as.data.frame()
+}
+
+df_sel <- subset_train(1, "GROCERY I")
+
+head(df_sel)
+```
+
+We have filtered the dataset for a particular store and Family (category) to analyse its sales pattern.
+
+```{r}
+# convert to tsibble
+df_sel %>% mutate(date=as_date(date)) %>% tsibble(index=date) -> 
+  df_sel
+autoplot(df_sel)
+df_sel_display <- df_sel %>% filter(date < as_date("2013-05-01"))   # weekly pattern
+
+autoplot(df_sel_display, sales)
+```
+
+This plot shows the weekly seasonality of sales data for the particular store and family.
+
+```{r}
+# train test split
+df_sel_train <- df_sel %>% fill_gaps(sales = 0) %>% filter(date < as_date("2016-08-15"))  # shops close on christmas, hence dates missing on dec 25th every year. 
+head(df_sel_train)          
+
+df_sel_test <- df_sel %>% fill_gaps(sales = 0) %>% filter(date >= as_date("2016-08-15"))  # replacing missing dates with sales 0
+head(df_sel_test)
+
+```
+
+## STL Decomposition
+
+```{r}
+# STL decomposition to view the trend and seasonality components
+df_sel_train %>% model(STL(sales)) %>% components() %>% autoplot()
+```
+
+This plot helps us visualize the different components of the patterns like trend and multiple seasonal components.
+
+## Fitting with Mean, Naive, Seasonal Naive and Drift models
+
+```{r}
+# fitting basic models like mean, naive, seasonal naive and drift models for baseline comparison
+fit <- df_sel_train %>%
+  model(
+    Mean = MEAN(sales),
+    Naive = NAIVE(sales),
+    Seasonal_Naive = SNAIVE(sales),
+    Drift = RW(sales ~ drift())
+  )
+accuracy(fit)
+
+```
+
+```{r}
+#forecasting the sales using seasonal naive
+fit <- fit %>% select(Seasonal_Naive)
+fc <- fit %>% forecast(h = "1 year")
+fc %>% autoplot(df_sel,level = NULL)
+```
+
+```{r}
+# printing test accuracy for seasonal naive model
+accuracy(fc,df_sel)
+```
+
+```{r}
+# residual test for seasonal naive model forecast
+gg_tsresiduals(fit)
+```
+
+
+## Performing ETS model:
+
+```{r}
+fit <- df_sel_train %>%
+  model(
+    ets_auto = ETS(sales),
+    ets = ETS(sales ~ error("A") + trend("N") + season("A"))
+  )
+accuracy(fit)
+report(fit[1])
+report(fit[2])
+
+fit <- fit %>% select(ets)
+fc <- fit %>% forecast(h = "1 year")
+```
+
+Our chosen ETS model and the ETS auto model have turned out to be the same.
+
+```{r}
+fc %>% autoplot(df_sel,level = 90)
+```
+```{r}
+accuracy(fc, df_sel)
+```
+
+From this accuracy, we can see that RMSE for ETS model is lesser than the seasonal naive model. This indicates better performance than seasonal naive.
+
+## ARIMA
+
+```{r}
+# performing kpss test
+df_sel_train %>%features(sales, unitroot_kpss)
+gg_tsdisplay(df_sel_train, sales, plot_type='partial')
+```
+
+ACF plot is not decreasing to zero. kpss pvalue is less 0.05. Hence null hypothesis is rejected. This indicates that data is not stationary, we need to perform differencing on the data.
+
+```{r}
+# performing differencing 
+df_sel_train_diff <- df_sel_train %>% mutate(sales = difference(sales, lag = 7))
+
+gg_tsdisplay(df_sel_train_diff, sales, plot_type='partial')
+
+
+
+df_sel_train_diff <- drop_na(df_sel_train_diff, sales)
+
+df_sel_train_diff %>%features(sales, unitroot_kpss)
+```
+
+After performing differencing, the ACF plot drops to zero sinusoidally/ exponentially. Also, the kpss pvalue is greater than 0.05. This indicates it is now converted to stationary data.
+
+```{r}
+df_sel_train %>%features(difference(sales,lag=7), unitroot_ndiffs)
+df_sel_train %>%features(difference(sales,lag=7), unitroot_nsdiffs)
+```
+
+For differencing with lag = 7, we are getting nsdiffs and ndiffs as 0. This indicates we need to include D = 1 in ARIMA models.
+
+From the ACF and PACF plot, based on our interpretations, we have to perform only seasonal differencing of period 1 (D=1), and the below setup for AR and MA.
+
+## (SEASONAL) ARIMA (p=1,d=0,q=3)(P=3,D=1,Q=1)
+
+```{r}
+fit <- df_sel_train %>%
+  model(
+    arima_auto = ARIMA(sales, stepwise = FALSE, approx = FALSE),
+    arima1 = ARIMA(sales~0+pdq(1,0,3)+PDQ(3,1,1))
+  )
+report(fit[1])
+report(fit[2])
+glance(fit)
+accuracy(fit)
+summary(forecast(fit$arima1, h = "1 year"))
+
+
+```
+
+Based on the above results and summary, we can see the model that we chose is giving lesser AICc values and lesser RMSE values compared to the ARIMA auto model. 
+
+There is also a drastic decrease in the RMSE values in ARIMA model compared to ETS model and Seasonal Naive model. This concludes better performance of ARIMA (1 0 3)(3 1 1)[7] model.
+
+```{r}
+# fetching the forecast values for both the model fits
+fc1 <- fit[1] %>% forecast(h = "1 year")
+fc2 <- fit[2] %>% forecast(h = "1 year")
+# plotting the forecast for auto arima
+fc1 %>% autoplot(df_sel,level = 90)
+fc1 %>% autoplot(df_sel_test)
+```
+```{r}
+# plotting forecasted values of chosen ARIMA model
+fc2 %>% autoplot(df_sel,level = 90)
+fc2 %>% autoplot(df_sel_test)
+```
+
+```{r}
+# performing residual test for both models
+gg_tsresiduals(fit[1])
+gg_tsresiduals(fit[2])
+
+```
+
+From ACF plot, we can see a significant spike at lag = 21 for auto ARIMA model. For our chosen ARIMA model, there is only a small spike in ACF plot at lag = 17, which could be possible white noise.
+
+```{r}
+# fetching accuracy values for forecasted data.
+accuracy(fc1,df_sel)
+accuracy(fc2,df_sel)
+```
+
+RMSE values for chosen ARIMA model is less compared to auto ARIMA model. Hence, the chosen ARIMA model is producing the best performance so far for our dataset.
+
+## Prophet model
+
+We are trying Prophet model due to its flexibility and automatic identification capabilities of trend, seasonality and holiday effects. It is also robust to outliers and missing data.
+
+```{r}
+colnames(df_sel_train) <- c('ds', 'y')
+m <- prophet(df_sel_train, seasonality.mode = 'multiplicative')
+future <- make_future_dataframe(m, periods = 365, freq="day", include_history = TRUE)
+forecast <- predict(m, future)
+p <- plot(m,forecast)
+p <- p + labs(x = "Date", y = "Sales")
+p <- p + ggtitle("Prophet Forecast")
+p
+```
+
+```{r}
+# residual test for prophet model
+residuals <- df_sel_train$y - forecast$yhat[1:nrow(df_sel_train)]
+
+ggplot(data.frame(ds = df_sel_train$ds, residuals = residuals), aes(x = ds, y = residuals)) +
+  geom_line() +
+  labs(x = "Date", y = "Residuals") +
+  ggtitle("Residuals Plot")
+
+ggplot(data.frame(residuals = residuals), aes(x = residuals)) +
+  geom_histogram(bins = 70, fill = "lightblue", color = "black") +
+  labs(x = "Residuals", y = "Frequency") +
+  ggtitle("Distribution of Residuals")
+
+acf(residuals)
+```
+The residuals are normally distributed, and the ACF plot seems to be sinusoidally decreasing to zero.
+
+```{r}
+library(forecast)
+actual_values <- df_sel_train$y
+
+forecasted_values <- forecast$yhat[1:length(actual_values)]
+
+accuracy_metrics <- accuracy(forecasted_values, actual_values)
+
+print(accuracy_metrics)
+```
+
+
+Prophet model has given us Test RMSE values as 474, which is the lowest so far compared to ARIMA models, ETS models and Seasonal Naive model.
+
+## Project Conclusion:
+
+Based on our comprehensive analysis and comparison of the forecasting models, the Prophet model emerged as the most effective in accurately predicting retail store sales. Leveraging advanced techniques for time series forecasting, the Prophet model incorporates trend and seasonality components while considering relevant external factors.
+
+Additionally, we conducted a thorough examination of the residuals to evaluate the quality of the forecasting models. By visualizing the residuals and performing statistical analyses, we assessed the models' ability to capture and explain the remaining variation in the sales data.
+
+In conclusion, this empirical study demonstrates the practical implementation of time series forecasting methods on a large-scale retail store sales dataset. The insights gained from our analysis based on our dataset, hold significant value for retail businesses seeking to optimize their sales strategies. The superior performance of the Prophet model highlights its potential for accurate sales forecasting, enabling businesses to make informed decisions and effectively manage their operations.
+
+
+
