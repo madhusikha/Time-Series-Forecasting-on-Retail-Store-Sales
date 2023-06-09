@@ -1,4 +1,4 @@
-# Time-Series-Forecasting-on-Retail-Store-Sales
+# Time Series Forecasting on Retail Store Sales
 
 This project encompasses an empirical study aimed at forecasting retail store sales using diverse time series forecasting methods. The dataset comprises an extensive collection of 3,000,888 records, encompassing sales details from 54 different stores and 83,488 transactions. Our primary objective was to analyze sales components, such as trend and seasonality, and assess the performance of various forecasting models implemented in R programming.
 
