@@ -6,3 +6,5 @@ To achieve this, we conducted preprocessing tasks, including data conversion int
 
 Furthermore, we employed several forecasting methods, including seasonal naive, exponential smoothing (ETS), ARIMA, and Prophet. Each method was evaluated based on its ability to capture underlying patterns in the sales data and provide accurate predictions. The models underwent training and testing using appropriate time series evaluation techniques, with a particular emphasis on the root mean square error (RMSE) metric for assessing forecasting accuracy.
 Through comprehensive analysis and comparison, the Prophet model demonstrated superior performance in terms of RMSE values for the test data.
+
+** Please refer .html file for the full project implementation with all the plots. **
